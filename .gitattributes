@@ -1,0 +1,7 @@
+# Normalize line endings in the repo; check out native on each platform.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

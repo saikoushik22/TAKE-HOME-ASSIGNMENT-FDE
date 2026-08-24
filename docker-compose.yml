@@ -1,0 +1,114 @@
+# The Lenny Growth Assistant — one-command local deployment.
+#
+#   cp .env.example .env && docker compose up --build
+#
+# Ollama deliberately runs on the HOST, not in a container: containerising it
+# would forfeit GPU access where a GPU exists and duplicate a multi-gigabyte
+# model store. The backend reaches it over host.docker.internal, which is
+# mapped explicitly below so this behaves identically on Linux.
+
+name: lenny-growth-assistant
+
+services:
+  # ------------------------------------------------------------------ db
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: lenny-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lenny}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lenny}
+      POSTGRES_DB: ${POSTGRES_DB:-lenny}
+      # Deterministic collation, so full-text ranking does not drift with the
+      # host locale between one engineer's machine and another's.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` alone returns true during initdb, before the database is
+      # actually usable. Selecting from the target database is the honest check.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lenny} -d ${POSTGRES_DB:-lenny} && psql -U ${POSTGRES_USER:-lenny} -d ${POSTGRES_DB:-lenny} -c 'SELECT 1' > /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ------------------------------------------------------------- backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lenny-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: docker
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lenny}:${POSTGRES_PASSWORD:-lenny}@db:5432/${POSTGRES_DB:-lenny}
+      # Inside a container, "localhost" is the container. This override is the
+      # single most common reason a working local setup breaks under Compose.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL_DOCKER:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-180}
+      LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
+      LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+      RAG_TOP_K: ${RAG_TOP_K:-8}
+      RAG_MIN_SIMILARITY: ${RAG_MIN_SIMILARITY:-0.35}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080}
+      DATA_DIR: /data
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # The corpus lives on the host so re-ingesting does not rebuild the image,
+      # and so a `docker compose down -v` does not discard a slow local embed run.
+      - ./data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ------------------------------------------------------------ frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked at build time: Vite inlines env vars into the bundle. Empty means
+        # "same origin", and nginx proxies /api to the backend (see nginx.conf).
+        VITE_API_BASE_URL: ""
+    container_name: lenny-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  pgdata:
+    driver: local

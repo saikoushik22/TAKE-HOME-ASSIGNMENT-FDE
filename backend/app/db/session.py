@@ -98,7 +98,16 @@ class Database:
         async with self.engine.begin() as conn:
             await conn.execute(text("SELECT pg_advisory_xact_lock(:k)"),
                                {"k": _SCHEMA_LOCK_ID})
-            await conn.exec_driver_sql(ddl)
+
+            # asyncpg prepares every statement, and a prepared statement may
+            # contain exactly one command — so the multi-statement schema file
+            # cannot go through the normal execute path. Dropping to the raw
+            # driver connection uses the simple query protocol, which accepts
+            # the whole script. Still inside the transaction and the advisory
+            # lock, so the operation stays atomic.
+            raw = await conn.get_raw_connection()
+            await raw.driver_connection.execute(ddl)
+
             await self._verify_embedding_dim(conn)
         log.info("db.schema.applied", extra={"embedding_dim": self._settings.embedding_dim})
 

@@ -10,10 +10,13 @@ secrets/
 # The Lenny's Podcast transcripts are third-party content. We do NOT redistribute
 # them in this repo; `make ingest` fetches them from the upstream public repo at
 # setup time. See docs/architecture.md -> "Ingestion".
-data/transcripts/
-data/*.jsonl
-data/*.sqlite
-data/cache/
+#
+# Matches a `data/` directory at ANY depth. The bare `data/transcripts/` rule
+# this replaces missed `backend/data/`, which is where the corpus actually lands
+# when the ingest CLI runs with the backend as its working directory.
+data/
+*.jsonl
+*.sqlite
 
 # ---------- Python ----------
 __pycache__/

@@ -303,6 +303,25 @@ class ArtifactRepository:
         )
         return _row_to_dict(result.one())
 
+    async def attach_message(
+        self, artifact_id: uuid.UUID, message_id: uuid.UUID
+    ) -> None:
+        """Link an artifact to the assistant message that produced it.
+
+        Two-step because the artifact is persisted mid-stream — the client needs
+        a real artifact id to render against before the assistant message exists.
+        """
+        await self._db.execute(
+            text(
+                """
+                UPDATE artifacts
+                SET message_id = :message_id, updated_at = now()
+                WHERE id = :id
+                """
+            ),
+            {"id": artifact_id, "message_id": message_id},
+        )
+
     async def get(self, artifact_id: uuid.UUID) -> dict[str, Any]:
         result = await self._db.execute(
             text(

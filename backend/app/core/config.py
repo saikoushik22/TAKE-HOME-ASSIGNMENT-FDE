@@ -129,6 +129,30 @@ class Settings(BaseSettings):
             raise ValueError("rag_min_similarity must be between 0.0 and 1.0")
         return v
 
+    @field_validator(
+        "llm_fallback_provider",
+        "openai_base_url",
+        "transcript_local_path",
+        "ingest_max_episodes",
+        mode="before",
+    )
+    @classmethod
+    def _blank_is_none(cls, v: object) -> object:
+        """Treat an empty environment variable as unset.
+
+        `.env.example` ships optional settings as bare `KEY=` because that is
+        how a reader expects to see "leave this blank". Without this, copying
+        the example file verbatim — the documented setup path — fails startup
+        with a type error, which is the worst possible first-run experience.
+
+        Only nullable fields are listed. `llm_model` is deliberately absent: it
+        is typed `str`, and its empty default already means "use the provider's
+        own default", so coercing it to None here would fail type validation.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     @field_validator("anthropic_api_key", "openai_api_key", mode="before")
     @classmethod
     def _blank_key_is_none(cls, v: object) -> object:
@@ -159,12 +183,24 @@ class Settings(BaseSettings):
 
     @property
     def data_path(self) -> Path:
-        return Path(self.data_dir)
+        """Where the corpus lives on disk.
+
+        A relative DATA_DIR is resolved against the repository root, never the
+        process working directory. `.env.example` ships `DATA_DIR=./data`, and
+        the ingest CLI runs from `backend/` while the server runs from the repo
+        root — without this, the same setting would point at two different
+        directories and the corpus would silently be downloaded twice.
+        """
+        configured = Path(self.data_dir)
+        if configured.is_absolute():
+            return configured
+        return (REPO_ROOT / configured).resolve()
 
     @property
     def transcripts_path(self) -> Path:
         if self.transcript_local_path:
-            return Path(self.transcript_local_path)
+            configured = Path(self.transcript_local_path)
+            return configured if configured.is_absolute() else (REPO_ROOT / configured).resolve()
         return self.data_path / "transcripts"
 
     def model_for(self, provider: ProviderName) -> str:
