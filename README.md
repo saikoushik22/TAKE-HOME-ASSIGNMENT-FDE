@@ -273,6 +273,37 @@ Coverage focuses on the things that would actually hurt:
 The manual UI checks — rendering, streaming, responsive layout, screen-reader
 paths — are in [`docs/manual-test-plan.md`](docs/manual-test-plan.md).
 
+### Grounding evaluation
+
+```bash
+make eval                                    # full: generation + citations
+python -m scripts.evaluate --retrieval-only  # fast: no model calls
+```
+
+Scores a golden set of in-corpus and deliberately out-of-corpus questions.
+Measured on the delivered build (59 episodes, `llama3.2:3b`, CPU-only):
+
+| Metric | Target | Measured | |
+|---|---|---|---|
+| Abstention correctness | 100% | **100%** | **PASS — release gate** |
+| Retrieval p95 | ≤ 400 ms | **380 ms** | PASS |
+| CBAR (citation-backed answers) | ≥ 95% | **64.7%** | **MISS** |
+
+**The safety gate holds.** All 8 out-of-corpus questions were declined and
+nothing was fabricated.
+
+**CBAR misses, for a specific and documented reason.** 5 of 6 failures are the
+3B model writing a well-grounded answer and omitting the `[S#]` markers —
+retrieval found the right evidence and the prose reflects it; the model simply
+did not follow the output-format instruction. This is the documented cost of the
+mandated CPU-only demo model ([PRD](docs/PRD.md) R3), not a retrieval defect.
+
+Re-measure after switching models — that is what the harness is for:
+
+```bash
+OLLAMA_MODEL=qwen2.5:7b make eval
+```
+
 ---
 
 ## Operations

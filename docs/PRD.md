@@ -88,6 +88,41 @@ retrofitting the instrumentation later is not.
 
 ---
 
+### Measured results (delivered build)
+
+Run with `make eval` against a 59-episode / 4,813-chunk corpus on the reference
+CPU-only machine, using the mandated demo model `llama3.2:3b`.
+
+| Metric | Target | Measured | |
+|---|---|---|---|
+| Abstention correctness | 100% | **100%** | **PASS — gate** |
+| Retrieval p95 | ≤ 400 ms | **380 ms** | PASS |
+| CBAR | ≥ 95% | **64.7%** | **MISS** |
+
+**The safety gate holds completely.** All 8 out-of-corpus questions were declined —
+5 rejected by the relevance floor before the model was invoked, 3 answered with an
+explicit "not in the provided sources" and zero citations. The assistant did not
+fabricate once.
+
+**CBAR misses its target, and the cause is specific rather than diffuse.** Of the 6
+failures, 5 are the model writing a well-grounded answer and omitting the `[S#]`
+markers; 1 is a legitimate abstention on a question this 59-episode subset covers
+poorly. So the retrieval is finding the right evidence and the prose reflects it —
+what fails is the model's adherence to an output-format instruction.
+
+A bounded citation-repair pass (§R3) lifted CBAR from 58.8% to 64.7%. It was kept
+because the gain is real, but it does not rescue the target, and pretending otherwise
+by tuning the metric would defeat the point of having one.
+
+**Honest read.** 95% CBAR is not reachable with a 3B model on CPU. That is the
+documented cost of the mandated local-demo configuration (R3), not a defect in
+retrieval or grounding. The upgrade path is one environment variable
+(`OLLAMA_MODEL=qwen2.5:7b`, or `LLM_PROVIDER=anthropic`), and the eval harness exists
+precisely so the client can re-measure after making that change rather than take this
+claim on trust. **This number is reported as measured, not as hoped.**
+
+---
+
 ### 1.3 Assumptions
 
 The client brief was intentionally incomplete. These are the load-bearing assumptions;
