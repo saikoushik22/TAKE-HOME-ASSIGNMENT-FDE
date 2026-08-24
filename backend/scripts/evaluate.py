@@ -109,27 +109,34 @@ async def main() -> int:
     print(f"  {'-' * 74}")
 
     for case in in_corpus:
-        async with factory() as session:
-            embedder = Embedder(embedding_provider(registry, settings), settings,
-                                CorpusRepository(session))
-            retriever = Retriever(session, embedder, settings)
+        # Isolate per case. A single failure must not abandon a run that takes
+        # tens of minutes on CPU — and a case that dies is a FAIL, not an
+        # excuse to stop measuring the rest.
+        try:
+            async with factory() as session:
+                embedder = Embedder(embedding_provider(registry, settings), settings,
+                                    CorpusRepository(session))
+                retriever = Retriever(session, embedder, settings)
 
-            started = time.perf_counter()
-            result = await retriever.retrieve(case["question"])
-            retrieval_times.append((time.perf_counter() - started) * 1000)
+                started = time.perf_counter()
+                result = await retriever.retrieve(case["question"])
+                retrieval_times.append((time.perf_counter() - started) * 1000)
 
-            if args.retrieval_only:
-                ok = not result.abstain and bool(result.chunks)
-                detail = (
-                    f"{len(result.chunks)} chunks, top sim "
-                    f"{max((c.vector_similarity for c in result.chunks), default=0):.2f}"
-                    if ok else (result.reason or "no chunks")
-                )
-            else:
-                ok, detail = await _run_turn(session, settings, registry, case["question"])
+                if args.retrieval_only:
+                    ok = not result.abstain and bool(result.chunks)
+                    detail = (
+                        f"{len(result.chunks)} chunks, top sim "
+                        f"{max((c.vector_similarity for c in result.chunks), default=0):.2f}"
+                        if ok else (result.reason or "no chunks")
+                    )
+                else:
+                    ok, detail = await _run_turn(session, settings, registry,
+                                                 case["question"])
+        except Exception as exc:
+            ok, detail = False, f"{type(exc).__name__}: {str(exc)[:70]}"
 
-            grounded += int(ok)
-            print(f"  {'':<12} {case['id']:<26} {mark(ok):<21} {DIM}{detail}{RESET}")
+        grounded += int(ok)
+        print(f"  {'':<12} {case['id']:<26} {mark(ok):<21} {DIM}{detail}{RESET}")
 
     # -------------------------------------- out-of-corpus (abstention)
     print()
@@ -138,34 +145,38 @@ async def main() -> int:
 
     abstained = 0
     for case in out_corpus:
-        async with factory() as session:
-            embedder = Embedder(embedding_provider(registry, settings), settings,
-                                CorpusRepository(session))
-            retriever = Retriever(session, embedder, settings)
-            result = await retriever.retrieve(case["question"])
-            best = max((c.vector_similarity for c in result.chunks), default=0.0)
+        try:
+            async with factory() as session:
+                embedder = Embedder(embedding_provider(registry, settings), settings,
+                                    CorpusRepository(session))
+                retriever = Retriever(session, embedder, settings)
+                result = await retriever.retrieve(case["question"])
+                best = max((c.vector_similarity for c in result.chunks), default=0.0)
 
-            if args.retrieval_only:
-                # PROXY ONLY. Retrieval abstention is layer 2 of four. Measured
-                # cosine bands for in- and out-of-corpus questions overlap, so
-                # this layer alone cannot separate them and this number
-                # UNDERSTATES how often the product actually declines. The real
-                # gate is the end-to-end check below.
-                ok = result.abstain or not result.chunks
-                detail = (
-                    f"retrieval declined (best sim {best:.2f})"
-                    if ok
-                    else f"passed floor (best sim {best:.2f}) — see end-to-end mode"
-                )
-            else:
-                # THE REAL GATE: did the ANSWER decline? Weak chunks reaching
-                # the model is fine, so long as the retrieval-constrained prompt
-                # and citation validation produce a refusal with no citations.
-                ok, detail = await _check_refusal(session, settings, registry,
-                                                  case["question"], best)
+                if args.retrieval_only:
+                    # PROXY ONLY. Retrieval abstention is layer 2 of four. The
+                    # measured cosine bands for in- and out-of-corpus questions
+                    # overlap, so this layer alone cannot separate them and this
+                    # number UNDERSTATES how often the product actually declines.
+                    # The real gate is the end-to-end check below.
+                    ok = result.abstain or not result.chunks
+                    detail = (
+                        f"retrieval declined (best sim {best:.2f})"
+                        if ok
+                        else f"passed floor (best sim {best:.2f}) — see end-to-end mode"
+                    )
+                else:
+                    # THE REAL GATE: did the ANSWER decline? Weak chunks reaching
+                    # the model is acceptable, so long as the retrieval-constrained
+                    # prompt and citation validation produce a refusal.
+                    ok, detail = await _check_refusal(session, settings, registry,
+                                                      case["question"], best)
+        except Exception as exc:
+            # A crashed case is a FAIL, never a reason to abandon the run.
+            ok, detail = False, f"{type(exc).__name__}: {str(exc)[:70]}"
 
-            abstained += int(ok)
-            print(f"  {'':<12} {case['id']:<26} {mark(ok):<21} {DIM}{detail}{RESET}")
+        abstained += int(ok)
+        print(f"  {'':<12} {case['id']:<26} {mark(ok):<21} {DIM}{detail}{RESET}")
 
     await registry.aclose()
     await database.disconnect()

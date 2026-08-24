@@ -239,11 +239,33 @@ rank-based, so it needs no score normalization between two retrievers whose scor
 on a comparable scale. That property is why it is used here rather than a weighted sum,
 which would require tuning a weight per corpus.
 
-**The relevance floor.** Fused candidates below `RAG_MIN_SCORE` are discarded. If nothing
-survives, the retriever returns empty and the orchestrator **short-circuits without calling
-the model at all** (PRD R1, mitigation 2). This is the single most important line of defense
-against confident fabrication, and it is a control-flow guarantee rather than a prompt
-instruction.
+**The relevance floor.** If the best candidate scores below `RAG_MIN_SIMILARITY`, the
+retriever returns empty and the orchestrator **short-circuits without calling the model at
+all** (PRD R1, mitigation 2). A control-flow guarantee, not a prompt instruction.
+
+**The floor is calibrated, and its limits are measured.** Running the golden set produced
+these cosine bands:
+
+| | range | median |
+|---|---|---|
+| in-corpus questions | 0.44 – 0.73 | 0.62 |
+| out-of-corpus questions | 0.43 – 0.55 | 0.44 |
+
+**The bands overlap.** No threshold on top-1 similarity separates them, because dense
+embeddings keep a high similarity floor for any two pieces of same-language text. Score
+margin and lexical agreement were both probed as alternative discriminators and neither
+separates either — 8 of 17 in-corpus questions have zero lexical hits, exactly like every
+out-of-corpus one.
+
+`0.50` is therefore chosen as the best available trade: it rejects 7 of 8 known
+out-of-corpus questions while keeping 16 of 17 in-corpus ones. **This layer cannot be
+perfect, and the design does not depend on it being perfect.** The residual case is caught
+downstream — given weak chunks for a tax-law question, the assistant answers "There is no
+information … in the provided sources" with zero citations, because the retrieval-constrained
+prompt (mitigation 1) and citation validation (mitigation 3) do the work the floor cannot.
+
+The value is a property of the corpus *and* the embedding model, not a universal constant.
+Re-run `make eval` after changing either.
 
 **Diversity cap.** At most `RAG_MAX_PER_EPISODE` chunks from any one episode, so an answer
 does not silently become a summary of a single interview when the corpus has broader coverage.

@@ -89,6 +89,7 @@ class Orchestrator:
             async for event in self._run(session_id, message, skill_override):
                 yield event
         except AppError as exc:
+            await self._abort()
             log.warning(
                 "turn.failed",
                 extra={"code": exc.code, "error": exc.message,
@@ -96,6 +97,7 @@ class Orchestrator:
             )
             yield {"type": "error", **exc.to_dict()}
         except Exception as exc:  # unexpected: log the trace, tell the user nothing internal
+            await self._abort()
             log.exception("turn.crashed", extra={"error": str(exc)})
             yield {
                 "type": "error",
@@ -105,6 +107,26 @@ class Orchestrator:
                     "detail": {"hint": "Check the backend logs for the correlation id."},
                 },
             }
+
+    async def _abort(self) -> None:
+        """Roll back after a failed turn.
+
+        This method exists because `handle()` deliberately converts an exception
+        into a terminal `error` event and then returns NORMALLY. That makes the
+        stream close cleanly for the client, but it also means the caller never
+        sees an exception — so the FastAPI session dependency takes its success
+        path and calls `commit()` on a session whose transaction is already
+        invalid. The result is `PendingRollbackError`: the real, actionable
+        error is replaced by a confusing one, and every later statement on that
+        session fails too.
+
+        Rolling back here keeps the "errors are events, not exceptions" contract
+        without leaving a poisoned session behind it.
+        """
+        try:
+            await self._db.rollback()
+        except Exception as exc:  # a failed rollback must not mask the original error
+            log.warning("turn.rollback_failed", extra={"error": str(exc)})
 
     # ------------------------------------------------------------- internals
     async def _run(

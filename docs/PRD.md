@@ -171,10 +171,26 @@ answer is worse than an error message, because the user cannot tell it apart fro
    actually retrieved. Markers pointing at non-existent sources are stripped and logged.
 4. Abstention is measured as a release gate (§1.2), not hoped for.
 
-**Residual risk:** a small local model can still misattribute *within* correctly retrieved
-context — citing S2 for a claim that came from S3. Detecting that needs claim-level entailment
-checking, which is out of scope. Documented honestly rather than papered over. The citation
-panel showing the retrieved text is the human-in-the-loop mitigation: the user can check.
+**Measured limits of mitigation 2.** The relevance floor was calibrated against the golden
+set rather than guessed, and the measurement changed the design. In-corpus questions score
+0.44–0.73; out-of-corpus questions score 0.43–0.55. **The bands overlap**, because dense
+embeddings keep a high similarity floor for any same-language text. Score margin and lexical
+agreement were probed as alternatives and separate no better.
+
+So mitigation 2 is *good but not sufficient*: at 0.50 it rejects 7 of 8 known out-of-corpus
+questions. The eighth is caught by mitigations 1 and 3 — verified end to end, the assistant
+answers "There is no information … in the provided sources" with zero citations. **This is
+precisely why the mitigation is layered rather than singular.** A design that relied on the
+floor alone would have shipped a hole.
+
+**Residual risk 1 — misattribution within retrieved context.** A small local model can still
+cite S2 for a claim that came from S3. Detecting that needs claim-level entailment checking,
+which is out of scope. The citation panel showing the retrieved passage is the
+human-in-the-loop mitigation: the user can check.
+
+**Residual risk 2 — the floor is corpus- and model-specific.** 0.50 is not a universal
+constant. Changing the corpus or the embedding model invalidates it, which is why `make eval`
+exists and why the derivation is recorded next to the value rather than in a commit message.
 
 #### R2 — Unsafe artifact rendering (severity: high)
 
