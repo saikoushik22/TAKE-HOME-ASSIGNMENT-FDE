@@ -41,21 +41,49 @@ export function useChat(options: {
   const abortRef = useRef<(() => void) | null>(null)
   // Kept in a ref so retry does not need to be re-created on every keystroke.
   const lastSentRef = useRef<{ sessionId: string; message: string; skill?: string | null } | null>(null)
+  /**
+   * The session currently on screen.
+   *
+   * A turn streams for tens of seconds on local hardware, which is easily long
+   * enough for the user to open another chat mid-answer. Every stream callback
+   * checks this ref against the session it was started for, so a stream that
+   * outlives its session can never write into whatever is on screen now.
+   */
+  const activeSessionRef = useRef<string | null>(null)
 
   const isStreaming = turn.stage !== 'idle' && turn.stage !== 'done' &&
     turn.stage !== 'error' && turn.stage !== 'stopped'
 
+  /** Abandon any turn still streaming. */
+  const cancelInFlight = useCallback(() => {
+    abortRef.current?.()
+    abortRef.current = null
+  }, [])
+
   const loadSession = useCallback(async (sessionId: string) => {
+    // Abort rather than letting the previous turn finish in the background.
+    // With a single local model, an abandoned generation starves the question
+    // the user is actually waiting for — Ollama serialises requests, so a
+    // 100-second answer nobody is reading blocks the next one entirely.
+    cancelInFlight()
+    activeSessionRef.current = sessionId
+
     const detail = await api.getSession(sessionId)
+    // Guard against two session loads racing: a slow fetch for session A must
+    // not overwrite the messages of session B the user has since opened.
+    if (activeSessionRef.current !== sessionId) return detail
+
     setMessages(detail.messages)
     setTurn(IDLE)
     return detail
-  }, [])
+  }, [cancelInFlight])
 
   const reset = useCallback(() => {
+    cancelInFlight()
+    activeSessionRef.current = null
     setMessages([])
     setTurn(IDLE)
-  }, [])
+  }, [cancelInFlight])
 
   const stop = useCallback(() => {
     abortRef.current?.()
@@ -68,6 +96,13 @@ export function useChat(options: {
   const send = useCallback(
     (sessionId: string, message: string, skill?: string | null) => {
       lastSentRef.current = { sessionId, message, skill }
+
+      // Never run two turns at once. Without this, a regenerate or a fast
+      // second send leaves the first stream alive, and both write into the same
+      // state — which also leaves `isStreaming` stuck true, silently disabling
+      // the composer.
+      cancelInFlight()
+      activeSessionRef.current = sessionId
 
       // Optimistic user message. A pending id keeps React keys stable; the
       // authoritative row replaces it when the turn completes.
@@ -82,11 +117,20 @@ export function useChat(options: {
       setMessages((prev) => [...prev, optimistic])
       setTurn({ ...IDLE, stage: 'accepted', statusLabel: 'Working…' })
 
+      /** True while this stream still owns what is on screen. */
+      const owns = () => activeSessionRef.current === sessionId
+
       abortRef.current = streamMessage(
         sessionId,
         { message, skill: skill ?? null },
         {
           onEvent: (event) => {
+            // Aborting a fetch does not retroactively cancel events already in
+            // flight, so ownership is re-checked on every one. Without this a
+            // turn started in one chat streams its tokens into whichever chat
+            // the user has since opened.
+            if (!owns()) return
+
             switch (event.type) {
               case 'status':
                 setTurn((t) => ({
@@ -142,31 +186,44 @@ export function useChat(options: {
           },
 
           onDone: () => {
+            // Refresh the sidebar regardless of which chat is on screen: the
+            // finished turn renamed its session and bumped its ordering.
+            onTurnComplete()
+
+            // The abandoned case. Re-reading here would replace the messages of
+            // the chat the user is now looking at with a different session's
+            // history — the exact cross-contamination this guard exists to stop.
+            if (!owns()) return
+
             abortRef.current = null
             // Re-read from the server so the rendered history is the persisted
             // history — ids, seq, and the citation-validated final text.
             void api
               .getSession(sessionId)
               .then((detail) => {
+                if (!owns()) return
                 setMessages(detail.messages)
                 setTurn(IDLE)
-                onTurnComplete()
               })
               .catch(() => {
                 // Reload failed; keep the streamed text visible rather than
                 // blanking the answer the user just watched arrive.
+                if (!owns()) return
                 setTurn((t) => (t.stage === 'error' ? t : { ...t, stage: 'done' }))
               })
           },
 
           onError: (error: ApiError) => {
+            // An error belonging to an abandoned turn must not surface as an
+            // error card on the chat the user has since opened.
+            if (!owns()) return
             abortRef.current = null
             setTurn((t) => ({ ...t, stage: 'error', statusLabel: '', error: error.body }))
           },
         },
       )
     },
-    [onArtifact, onTurnComplete],
+    [cancelInFlight, onArtifact, onTurnComplete],
   )
 
   const retry = useCallback(() => {

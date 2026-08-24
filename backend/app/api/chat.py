@@ -22,7 +22,7 @@ from ..core.errors import AppError
 from ..core.logging import get_logger
 from ..db.repositories import ArtifactRepository
 from ..schemas import ArtifactOut, ChatRequest, ChatResponse, Citation
-from .deps import DbDep, RegistryDep, SettingsDep
+from .deps import DatabaseDep, DbDep, RegistryDep, SettingsDep
 
 log = get_logger(__name__)
 
@@ -49,37 +49,68 @@ async def stream_message(
     session_id: uuid.UUID,
     payload: ChatRequest,
     request: Request,
-    db: DbDep,
+    database: DatabaseDep,
     registry: RegistryDep,
     settings: SettingsDep,
 ) -> StreamingResponse:
-    orchestrator = Orchestrator(db, settings, registry)
+    """Stream one turn.
+
+    This endpoint deliberately does NOT take the request-scoped session
+    dependency. A dependency with `yield` is torn down after the response
+    completes, and for a StreamingResponse that teardown is not guaranteed to
+    run when the client disconnects mid-stream — the task is cancelled at the
+    yield point and the commit never happens.
+
+    The consequence was not theoretical: abandoning a turn (opening a new chat
+    while an answer was streaming) leaked a pooled connection stuck `idle in
+    transaction`, still holding row locks on `sessions` from the end-of-turn
+    touch. Five of those exhausted the pool and wedged the entire application —
+    every later session create, rename, or delete queued behind them forever.
+
+    Owning the session inside the generator makes the lifetime explicit: the
+    `async with` runs on GeneratorExit too, so Starlette closing an abandoned
+    stream always returns the connection and releases its locks.
+    """
 
     async def generate() -> AsyncIterator[str]:
-        # An immediate frame defeats proxy buffering and gives the UI something
-        # to render before the first model token, which can be seconds away.
-        yield _sse({"type": "status", "stage": "accepted", "detail": "Working…"})
-        try:
-            async for event in orchestrator.handle(
-                session_id=session_id,
-                message=payload.message,
-                skill_override=payload.skill,
-            ):
-                if await request.is_disconnected():
-                    log.info("stream.client_disconnected",
-                             extra={"session_id": str(session_id)})
-                    break
-                yield _sse(event)
-        except Exception as exc:  # the stream must always terminate cleanly
-            log.exception("stream.failed", extra={"error": str(exc)})
-            yield _sse({
-                "type": "error",
-                "error": {
-                    "code": "STREAM_FAILED",
-                    "message": "The response stream ended unexpectedly.",
-                    "detail": {"hint": "Retry the message."},
-                },
-            })
+        factory = database.session_factory()
+
+        async with factory() as db:  # guaranteed close, disconnect included
+            try:
+                # An immediate frame defeats proxy buffering and gives the UI
+                # something to render before the first model token, which can be
+                # seconds away.
+                yield _sse({"type": "status", "stage": "accepted", "detail": "Working…"})
+
+                orchestrator = Orchestrator(db, settings, registry)
+
+                async for event in orchestrator.handle(
+                    session_id=session_id,
+                    message=payload.message,
+                    skill_override=payload.skill,
+                ):
+                    yield _sse(event)
+
+                    # Checked AFTER yielding so the final `done` frame still
+                    # reaches a client that is about to go away.
+                    if await request.is_disconnected():
+                        log.info("stream.client_disconnected",
+                                 extra={"session_id": str(session_id)})
+                        break
+
+                await db.commit()
+
+            except Exception as exc:  # the stream must always terminate cleanly
+                await db.rollback()
+                log.exception("stream.failed", extra={"error": str(exc)})
+                yield _sse({
+                    "type": "error",
+                    "error": {
+                        "code": "STREAM_FAILED",
+                        "message": "The response stream ended unexpectedly.",
+                        "detail": {"hint": "Retry the message."},
+                    },
+                })
 
     return StreamingResponse(
         generate(),

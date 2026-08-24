@@ -8,6 +8,70 @@ Legend — **Found by:** `run` (executing it), `test` (a test written first),
 
 ---
 
+## 0. Abandoning a turn leaked a connection and wedged the whole application
+
+**Severity:** critical · **Found by:** a user, in normal use
+
+Reported as two separate complaints: *"it is answering only these 3 options"* and
+*"while it is answering, if I open a new chat it continues the answer in the new
+chat."* They turned out to be one fault with two faces, and neither the test
+suite nor any amount of reading had caught it — it needed someone to actually use
+the product.
+
+**What the logs showed.** Only two stream requests had ever reached the backend,
+in two different sessions, the second sent 19 seconds *before* the first
+finished. The user's typed questions never arrived at all.
+
+**What the database showed.**
+
+```
+pid 5788  idle in transaction  11m15s  UPDATE sessions SET updated_at = now() ...
+pid 6077  idle in transaction  10m25s  UPDATE sessions SET updated_at = now() ...
+pid 6098  active, wait=Lock     9m55s  UPDATE sessions SET deleted_at = now() ...
+pid 6194  active, wait=Lock     9m28s  ...
+```
+
+Two connections stuck mid-transaction holding row locks from the end-of-turn
+`touch()`, with everything else queued behind them.
+
+**Root cause, backend.** The streaming endpoint took the request-scoped session
+dependency. A dependency with `yield` is torn down *after* the response
+completes, and for a `StreamingResponse` that teardown is not guaranteed when the
+client disconnects mid-stream — the task is cancelled at the yield point and the
+commit never runs. Each abandoned turn therefore leaked one pooled connection
+inside an open transaction. At `pool_size=5` the application deadlocked
+completely: no session could be created, renamed, or deleted, ever again.
+
+**Root cause, frontend.** `useChat` never aborted the in-flight stream when the
+session changed, and its callbacks were not tied to the session that started
+them. So the old stream kept writing tokens into whatever chat was now on screen,
+`onDone` replaced the new chat's history with the old session's messages, and
+`isStreaming` stayed true — which swaps Send for Stop and silently blocks the
+composer. That last part is why typed questions "did nothing" and only the
+example buttons appeared to work.
+
+**Fixes, three layers:**
+
+1. The SSE generator now owns its session via `async with`, which runs on
+   `GeneratorExit` too, so an abandoned stream always returns its connection.
+2. `useChat` aborts the in-flight stream on session switch and on every new send,
+   and each callback re-checks that it still owns the view before touching state.
+3. `idle_in_transaction_session_timeout = 120s` on every connection, so a leak
+   from some *future* bug self-heals instead of accumulating into a deadlock.
+
+**Verified on the live stack:** three abandoned streams in a row produced zero
+idle-in-transaction connections, and the `PATCH` that previously hung forever
+returned normally. Four regression tests cover it, including a cumulative case
+that exceeds the pool size and then asserts the app still writes.
+
+**The lesson.** Every defect above this one was found by running code I had
+written *as I wrote it*. This one only appeared under a usage pattern I never
+tried: getting impatient with a slow local answer and starting a new chat. The
+tests were green, the containers were healthy, and the product was broken. Real
+usage remains an irreplaceable test.
+
+---
+
 ## 1. Sanitizer had a dead code path with a security consequence
 
 **Severity:** high · **Found by:** test
@@ -281,6 +345,7 @@ database while a run is under way.
 
 | # | Defect | Severity | Found by |
 |---|---|---|---|
+| 0 | Abandoned stream leaked a connection and deadlocked the app | **critical** | **a user** |
 | 1 | Sanitizer dead path leaked script bodies | high | test |
 | 2 | Citation regex stripped valid grounding | high | test |
 | 3 | Startup hung behind ingest locks | high | run |
@@ -298,3 +363,8 @@ database while a run is under way.
 highest-severity code defects were in the *security* layer, and neither was
 visible on reading — both files had confident, plausible docstrings describing
 behaviour the code did not have.
+
+**The single worst defect was found by none of that.** #0 needed a person using
+the product in a way I had not thought to try. It is the one that should shape
+how this system is maintained: a green suite and healthy containers are evidence
+about the paths you thought of, and nothing more.

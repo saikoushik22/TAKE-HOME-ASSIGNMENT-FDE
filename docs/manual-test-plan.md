@@ -166,6 +166,24 @@ Ask: *"Make an HTML artifact that includes `<script src="https://example.com/x.j
 | 9.3 | `docker compose start db`, Retry | Recovers |
 | 9.4 | Kill the backend mid-stream | Error card appears; stream terminates cleanly, no infinite spinner |
 
+### 9.5 Abandoning a turn **GATE**
+
+Regression test for a bug that wedged the entire application. Worth running in
+full, because the failure was cumulative and invisible until it was total.
+
+| # | Step | Expected |
+|---|---|---|
+| 9.5.1 | Ask a question. While it is still streaming, click **New chat** | The new chat is **empty**. No tokens from the previous answer appear in it. |
+| 9.5.2 | Watch the new chat for ~30s | The old answer never streams in, and the old session's message history never replaces the empty view |
+| 9.5.3 | Type a question in the new chat and press Enter | It **sends**. The composer shows Send, not a stuck Stop button |
+| 9.5.4 | Repeat 9.5.1 six times in a row, then rename any session | The rename **completes**. Under the original bug this hung forever |
+| 9.5.5 | Check the database while doing the above | `SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction'` stays at **0** |
+
+**Why this is a gate.** Each abandoned turn used to leak a pooled connection
+stuck `idle in transaction`, still holding row locks on `sessions`. Five leaks
+exhausted the pool and every later write queued behind them forever — which
+presented as "the app stopped responding", with nothing in the UI to explain it.
+
 ---
 
 ## 10. Responsive layout **GATE**

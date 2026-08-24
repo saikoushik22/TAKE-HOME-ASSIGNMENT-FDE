@@ -61,6 +61,22 @@ class Database:
             max_overflow=self._settings.db_max_overflow,
             pool_pre_ping=True,  # a recycled-but-dead connection must not surface as a 500
             echo=False,
+            connect_args={
+                "server_settings": {
+                    # Self-healing backstop. If a connection is ever left open
+                    # inside a transaction — an abandoned stream, a crashed
+                    # task — Postgres kills it instead of letting it hold row
+                    # locks indefinitely. Without this, a handful of leaks
+                    # exhausts the pool and every session write queues forever
+                    # behind them, which looks to a user like the whole app
+                    # silently stopped responding.
+                    #
+                    # Generous enough that a legitimate long turn (a 1,250-word
+                    # essay on CPU) is never interrupted: the timeout measures
+                    # IDLE time inside a transaction, not total duration.
+                    "idle_in_transaction_session_timeout": "120000",  # 2 minutes
+                },
+            },
         )
         self._sessionmaker = async_sessionmaker(bind=self._engine, expire_on_commit=False)
 
