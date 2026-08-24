@@ -160,6 +160,24 @@ class GroundedQASkill(Skill):
         # client before we can check them, so the client renders them pending
         # and the authoritative, pruned text arrives with the result event.
         audit = validate_and_prune(raw, available)
+
+        # Citation repair. A small local model frequently writes a perfectly
+        # grounded answer and simply omits the [S#] markers — measured at 6 of 7
+        # CBAR failures on the golden set. The content is right; only the
+        # receipts are missing, so one bounded repair pass recovers the answer
+        # instead of discarding it (PRD R3).
+        repaired = False
+        if not audit.citations and chunks:
+            log.info("qa.citations.missing", extra={"sources": len(chunks)})
+            recovered = await self._repair_citations(ctx, raw, chunks)
+            if recovered is not None:
+                candidate = validate_and_prune(recovered, available)
+                if candidate.citations:
+                    audit = candidate
+                    repaired = True
+                    yield {"type": "status", "stage": "generating",
+                           "detail": "Adding citations…"}
+
         final_text, final_citations = renumber(audit.text, audit.citations)
 
         yield {"type": "citations", "citations": final_citations}
@@ -179,9 +197,76 @@ class GroundedQASkill(Skill):
                     "sources_retrieved": len(chunks),
                     "sources_cited": len(final_citations),
                     "grounded": bool(final_citations),
+                    # Surfaced so the repair rate is measurable. If it climbs,
+                    # the base prompt or the model is the thing to fix.
+                    "citations_repaired": repaired,
                 },
             ),
         }
+
+    async def _repair_citations(
+        self, ctx: SkillContext, draft: str, chunks: list[Any]
+    ) -> str | None:
+        """One bounded attempt to add missing [S#] markers to a good answer.
+
+        Deliberately constrained to *annotating* the existing draft rather than
+        regenerating it. Regenerating would risk changing the substance of an
+        answer the user has already watched stream in; annotating can only add
+        receipts to claims that are already there.
+
+        Returns None on any failure — a missing citation is a quality problem,
+        never a reason to fail the request.
+        """
+        if ctx.provider is None:
+            return None
+
+        instruction = (
+            "Below is a draft answer and the numbered sources it was written "
+            "from. Return the SAME answer with inline [S#] citation markers "
+            "added immediately after each claim the sources support.\n\n"
+            "Rules:\n"
+            "- Do not change the wording, meaning, or structure of the draft.\n"
+            "- Do not add new claims.\n"
+            "- Only cite a source that genuinely supports the claim.\n"
+            "- Use the exact form [S1], [S2].\n"
+            "- Return ONLY the annotated answer, with no preamble.\n\n"
+            f"Sources:\n\n{format_context(chunks)}\n\n"
+            f"Draft answer:\n\n{draft}"
+        )
+
+        try:
+            completion = await ctx.provider.complete(
+                [
+                    Message(role="system", content=(
+                        "You add citation markers to an existing answer. You never "
+                        "rewrite it."
+                    )),
+                    Message(role="user", content=instruction),
+                ],
+                model=ctx.model,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            log.warning("qa.repair.failed", extra={"error": str(exc)})
+            return None
+
+        text = completion.text.strip()
+        if not text:
+            return None
+
+        # Guard against the model ignoring the instruction and rewriting. If the
+        # result is wildly shorter, the draft was replaced rather than annotated.
+        if len(text) < len(draft) * 0.6:
+            log.warning(
+                "qa.repair.rejected",
+                extra={"reason": "output too short — model rewrote instead of annotating",
+                       "draft_chars": len(draft), "repaired_chars": len(text)},
+            )
+            return None
+
+        log.info("qa.repair.applied", extra={"draft_chars": len(draft),
+                                             "repaired_chars": len(text)})
+        return text
 
     async def _suggest(self, ctx: SkillContext) -> str:
         """Offer topics the corpus does cover.
