@@ -16,8 +16,20 @@ from ...core.logging import get_logger
 
 log = get_logger(__name__)
 
-# Matches [S1], [S2], and grouped forms like [S1, S3] or [S1][S2].
-MARKER_RE = re.compile(r"\[S\s*(\d+(?:\s*,\s*\d+)*)\s*\]", re.IGNORECASE)
+# Matches [S1], [S2], and grouped forms: [S1, S3], [S1, 3], [S1][S2].
+#
+# The optional `S` on continuation numbers matters more than it looks. A model
+# told to "cite with [S1] or [S2]" naturally writes [S1, S2] when two sources
+# support one claim. Without that `S?` the group does not match at all, the
+# marker is treated as unresolvable, and REAL grounding is stripped from the
+# answer — silently lowering the citation rate the product is measured on.
+MARKER_RE = re.compile(r"\[S\s*(\d+(?:\s*,\s*S?\s*\d+)*)\s*\]", re.IGNORECASE)
+
+
+def _parse_index(raw: str) -> int | None:
+    """Parse one marker number, tolerating an 'S' prefix and stray whitespace."""
+    cleaned = raw.strip().lstrip("Ss").strip()
+    return int(cleaned) if cleaned.isdigit() else None
 
 
 @dataclass(slots=True)
@@ -52,9 +64,8 @@ def validate_and_prune(
         raw_numbers = [n.strip() for n in match.group(1).split(",")]
         kept: list[str] = []
         for raw in raw_numbers:
-            try:
-                number = int(raw)
-            except ValueError:
+            number = _parse_index(raw)
+            if number is None:
                 continue
             if number in valid_indexes:
                 audit.used_indexes.add(number)
@@ -92,9 +103,8 @@ def renumber(text: str, citations: list[dict[str, Any]]) -> tuple[str, list[dict
     mapping = {c["index"]: new for new, c in enumerate(ordered, start=1)}
 
     def replace(match: re.Match[str]) -> str:
-        numbers = [n.strip() for n in match.group(1).split(",")]
-        kept = [str(mapping[int(n)]) for n in numbers
-                if n.isdigit() and int(n) in mapping]
+        numbers = [_parse_index(n) for n in match.group(1).split(",")]
+        kept = [str(mapping[n]) for n in numbers if n is not None and n in mapping]
         return ("[S" + ", S".join(kept) + "]") if kept else ""
 
     renumbered_text = MARKER_RE.sub(replace, text)

@@ -12,10 +12,14 @@ Two paths, deliberately different:
   *external references* and dangerous URL schemes — the exfiltration channels —
   not to strip all script. Containment of script is what CSP plus the sandbox
   provide, and they do it more reliably than tag filtering can.
-* **Markdown artifacts** go through nh3 (Rust `ammonia`) with a strict
-  allowlist and no raw HTML pass-through. Markdown is *not* safe merely because
-  it is Markdown: most renderers pass raw HTML through by default, which is
-  precisely the vulnerability.
+* **Markdown artifacts** are stored as Markdown, so they are cleaned with
+  syntax-preserving passes that delete dangerous elements *together with their
+  bodies*. An HTML sanitizer is deliberately NOT used here: running one over
+  Markdown source HTML-escapes the plain text, turning `> quote` into
+  `&gt; quote` and destroying every blockquote. Markdown is *not* safe merely
+  because it is Markdown — most renderers pass raw HTML through by default,
+  which is precisely the vulnerability — so the stored content is cleaned here
+  and sanitized again at render time by DOMPurify.
 
 Every removal is recorded so the viewer can show a "sanitized" badge naming
 what was taken out. Silently altering a user's artifact is a trust violation;
@@ -29,8 +33,6 @@ import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any
-
-import nh3
 
 from ..core.logging import get_logger
 
@@ -64,8 +66,17 @@ SAFE_DATA_PREFIXES = (
 DANGEROUS_SCHEMES = ("javascript:", "vbscript:", "livescript:", "data:text/html")
 
 # CSS that reaches the network. Blocked to preserve the no-egress guarantee.
+# Detector only — used to decide whether a style needs rewriting at all.
 CSS_NETWORK_RE = re.compile(
     r"""(?:@import\b|url\s*\(\s*['"]?\s*(?:https?:)?//)""", re.IGNORECASE
+)
+
+# Substitution patterns. These consume the ENTIRE construct, not just its
+# prefix: replacing only `url(` leaves the host sitting in stored content, so
+# the sanitization report would claim a removal that did not happen.
+CSS_IMPORT_SUB_RE = re.compile(r"@import\b[^;]*;?", re.IGNORECASE)
+CSS_URL_SUB_RE = re.compile(
+    r"""url\s*\(\s*['"]?\s*(?:https?:)?//[^)]*\)""", re.IGNORECASE
 )
 
 CSP = (
@@ -237,7 +248,8 @@ class _HTMLSanitizer(HTMLParser):
         # Inside <style>, strip rules that would reach the network.
         if self._open_stack and self._open_stack[-1] == "style":
             if CSS_NETWORK_RE.search(data):
-                data = CSS_NETWORK_RE.sub("/* blocked-remote-url */(", data)
+                data = CSS_IMPORT_SUB_RE.sub("/* blocked-remote-import */", data)
+                data = CSS_URL_SUB_RE.sub("url(about:blank)", data)
                 self.report.removed_attributes.append("style[remote url]")
         self.out.append(data)
 
@@ -276,49 +288,88 @@ def sanitize_html(raw: str) -> SanitizedArtifact:
     return SanitizedArtifact(content=cleaned, report=report)
 
 
-def sanitize_markdown(raw: str) -> SanitizedArtifact:
-    """Sanitize a Markdown artifact.
+# Elements stripped from Markdown *together with their content*. An element
+# whose body is executable or fetchable is not made safe by dropping its tags:
+# removing only `<script>` leaves `alert(1)` sitting in the document as text
+# that the next renderer may happily re-parse.
+_MD_DANGEROUS = "script|style|iframe|object|embed|applet|form|frame|frameset"
 
-    Any embedded raw HTML is reduced to a safe subset by nh3 rather than passed
-    through. Links keep their text but lose dangerous schemes.
+# Paired form: opening tag through matching closing tag, body included.
+_MD_PAIRED_RE = re.compile(
+    rf"<\s*({_MD_DANGEROUS})\b[^>]*>.*?<\s*/\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Unclosed form: a model can emit `<script>` with no terminator. Fail closed by
+# deleting to end of document rather than leaving the body behind.
+_MD_UNCLOSED_RE = re.compile(
+    rf"<\s*({_MD_DANGEROUS})\b[^>]*>.*", re.IGNORECASE | re.DOTALL
+)
+
+# Void elements that carry no body but do carry a hazard.
+_MD_VOID_RE = re.compile(
+    r"<\s*(base|link|meta)\b[^>]*>", re.IGNORECASE
+)
+
+# Inline event handlers on any surviving raw HTML.
+_MD_EVENT_RE = re.compile(r"\son[a-z]+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
+
+# Dangerous schemes in Markdown link/image syntax: [text](javascript:…)
+_MD_LINK_SCHEME_RE = re.compile(
+    r"(?P<text>!?\[[^\]]*\])\(\s*(?:javascript|vbscript|livescript|data:text/html)[^)]*\)",
+    re.IGNORECASE,
+)
+
+# Dangerous schemes in raw href/src attributes that survived in inline HTML.
+_MD_ATTR_SCHEME_RE = re.compile(
+    r"""(?P<attr>\b(?:href|src)\s*=\s*)(?P<q>["']?)\s*"""
+    r"""(?:javascript|vbscript|livescript|data:text/html)[^"'\s>]*(?P=q)""",
+    re.IGNORECASE,
+)
+
+
+def sanitize_markdown(raw: str) -> SanitizedArtifact:
+    """Sanitize a Markdown artifact, preserving Markdown syntax.
+
+    Deliberately regex-based rather than nh3. nh3 is an HTML sanitizer, and
+    running it over Markdown *source* HTML-escapes the plain text: `> quote`
+    becomes `&gt; quote`, which silently destroys every blockquote, and `a < b`
+    becomes `a &lt; b`. Verified empirically before choosing this path.
+
+    Markdown artifacts are stored as Markdown and rendered client-side through
+    marked + DOMPurify, so raw HTML inside them is sanitized again at render
+    time. This pass exists so the *stored* content is safe on its own, and does
+    not depend on every future consumer remembering to sanitize.
     """
     report = SanitizationReport()
+    cleaned = raw
 
-    dangerous = re.findall(
-        r"<\s*(script|iframe|object|embed|form)\b", raw, re.IGNORECASE
-    )
-    if dangerous:
-        report.removed_elements.extend(tag.lower() for tag in dangerous)
+    for pattern in (_MD_PAIRED_RE, _MD_UNCLOSED_RE, _MD_VOID_RE):
+        def _drop(match: re.Match[str]) -> str:
+            tag = (match.group(1) if match.lastindex else "element").lower()
+            report.removed_elements.append(tag)
+            return ""
 
-    # Neutralize javascript: links in Markdown link syntax before nh3 sees them.
-    def _strip_scheme(match: re.Match[str]) -> str:
+        cleaned = pattern.sub(_drop, cleaned)
+
+    def _drop_handler(match: re.Match[str]) -> str:
+        report.removed_attributes.append(match.group(0).strip().split("=")[0])
+        return ""
+
+    cleaned = _MD_EVENT_RE.sub(_drop_handler, cleaned)
+
+    def _block_link(match: re.Match[str]) -> str:
         report.rewritten_urls.append(match.group(0)[:60])
         return f"{match.group('text')}(blocked:)"
 
-    cleaned = re.sub(
-        r"(?P<text>\[[^\]]*\])\(\s*(?:javascript|vbscript|data:text/html)[^)]*\)",
-        _strip_scheme,
-        raw,
-        flags=re.IGNORECASE,
-    )
+    cleaned = _MD_LINK_SCHEME_RE.sub(_block_link, cleaned)
 
-    cleaned = nh3.clean(
-        cleaned,
-        tags={
-            "p", "br", "strong", "em", "b", "i", "u", "s", "code", "pre",
-            "blockquote", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6",
-            "a", "img", "table", "thead", "tbody", "tr", "th", "td", "hr",
-            "span", "div", "sup", "sub", "del", "ins",
-        },
-        attributes={
-            "a": {"href", "title"},
-            "img": {"src", "alt", "title"},
-            "*": {"class"},
-        },
-        url_schemes={"http", "https", "mailto"},
-        link_rel="noopener noreferrer",
-        strip_comments=True,
-    )
+    def _block_attr(match: re.Match[str]) -> str:
+        report.rewritten_urls.append(match.group(0)[:60])
+        quote = match.group("q") or '"'
+        return f"{match.group('attr')}{quote}blocked:{quote}"
+
+    cleaned = _MD_ATTR_SCHEME_RE.sub(_block_attr, cleaned)
 
     if report.changed:
         log.info("artifact.sanitized", extra={"kind": "markdown", **report.to_dict()})
@@ -330,32 +381,7 @@ def sanitize(raw: str, kind: str) -> SanitizedArtifact:
     if kind == "html":
         return sanitize_html(raw)
     if kind == "markdown":
-        # Markdown artifacts are stored as Markdown and rendered client-side;
-        # we only strip embedded HTML hazards, preserving Markdown syntax.
-        report = SanitizationReport()
-        dangerous = re.findall(
-            r"<\s*(script|iframe|object|embed|form|base|link)\b", raw, re.IGNORECASE
-        )
-        cleaned = raw
-        if dangerous:
-            report.removed_elements.extend(tag.lower() for tag in dangerous)
-            cleaned = re.sub(
-                r"<\s*(script|iframe|object|embed|form|base|link)\b[^>]*>"
-                r"(.*?)(?:<\s*/\s*\1\s*>)?",
-                "",
-                cleaned,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-        cleaned = re.sub(
-            r"(\[[^\]]*\])\(\s*(?:javascript|vbscript)[^)]*\)",
-            r"\1(blocked:)",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
-        if report.changed:
-            log.info("artifact.sanitized", extra={"kind": "markdown",
-                                                  **report.to_dict()})
-        return SanitizedArtifact(content=cleaned, report=report)
+        return sanitize_markdown(raw)
     raise ValueError(f"Unsupported artifact kind: {kind}")
 
 

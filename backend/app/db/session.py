@@ -96,8 +96,35 @@ class Database:
             "{EMBEDDING_DIM}", str(self._settings.embedding_dim)
         )
         async with self.engine.begin() as conn:
-            await conn.execute(text("SELECT pg_advisory_xact_lock(:k)"),
-                               {"k": _SCHEMA_LOCK_ID})
+            # Bound every lock wait in this transaction.
+            #
+            # `CREATE TABLE/INDEX IF NOT EXISTS` still needs a relation lock even
+            # when it ends up doing nothing, so a long-running write transaction
+            # (an ingest, say) blocks it. Without a timeout the startup hangs
+            # forever, holds the advisory lock below, and every *subsequent*
+            # startup queues behind it — one slow writer silently wedges the
+            # whole service, with a container that simply never turns healthy.
+            #
+            # Failing in seconds with an actionable message is strictly better
+            # than an unbounded wait nobody can diagnose from the outside.
+            await conn.execute(text("SET LOCAL lock_timeout = '10s'"))
+            await conn.execute(text("SET LOCAL statement_timeout = '60s'"))
+
+            try:
+                await conn.execute(text("SELECT pg_advisory_xact_lock(:k)"),
+                                   {"k": _SCHEMA_LOCK_ID})
+            except Exception as exc:
+                raise DatabaseUnavailableError(
+                    "Timed out waiting to apply the database schema",
+                    hint=(
+                        "Another process is holding the schema lock — usually an "
+                        "ingest still running, or a previous startup stuck behind "
+                        "one. Wait for it to finish, or inspect with: "
+                        "SELECT pid, state, query FROM pg_stat_activity "
+                        "WHERE state <> 'idle';"
+                    ),
+                    detail={"lock_id": _SCHEMA_LOCK_ID, "error": str(exc)},
+                ) from exc
 
             # asyncpg prepares every statement, and a prepared statement may
             # contain exactly one command — so the multi-statement schema file

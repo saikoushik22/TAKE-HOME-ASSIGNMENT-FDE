@@ -91,8 +91,18 @@ class Ingestor:
         for path in files:
             try:
                 await self._ingest_one(path, known_hashes, force, report)
+                # Commit per episode, not once at the end. Two reasons, both
+                # learned the hard way:
+                #   1. A single transaction spanning the whole run holds
+                #      relation locks on `episodes`/`chunks` for hours, which
+                #      blocks the `CREATE ... IF NOT EXISTS` that every backend
+                #      startup runs — one ingest wedges the whole service.
+                #   2. Work becomes durable as it completes, so a crash at
+                #      episode 200 does not discard the first 199.
+                await self._repo.commit()
             except Exception as exc:
                 # Isolation: never let one bad file end the run.
+                await self._repo.rollback()
                 report.episodes_failed += 1
                 report.failures.append({"path": str(path), "error": str(exc)})
                 log.warning(

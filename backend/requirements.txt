@@ -13,11 +13,6 @@ pgvector==0.3.6
 httpx==0.28.1
 PyYAML==6.0.2
 
-# ---------- Security ----------
-# Rust-backed HTML sanitizer. Used as the final hardening pass after our own
-# reporting sanitizer. See app/security/sanitize.py and architecture.md section 8.
-nh3==0.2.20
-
 # ---------- Cloud LLM providers (optional at runtime) ----------
 # Installed always so the provider registry can import them, but never required:
 # a provider without a configured key reports itself unavailable rather than failing.

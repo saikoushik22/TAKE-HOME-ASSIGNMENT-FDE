@@ -366,6 +366,20 @@ class CorpusRepository:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
+    async def commit(self) -> None:
+        """Commit the current unit of work.
+
+        Exposed so a long batch job can bound its transactions. Holding one
+        transaction open for an entire multi-hour ingest keeps relation locks
+        on `episodes` and `chunks` for that whole time, which blocks any
+        `CREATE ... IF NOT EXISTS` the application runs at startup — and a
+        crash at minute 90 would discard all 90 minutes of work.
+        """
+        await self._db.commit()
+
+    async def rollback(self) -> None:
+        await self._db.rollback()
+
     async def stats(self) -> dict[str, Any]:
         result = await self._db.execute(
             text(
