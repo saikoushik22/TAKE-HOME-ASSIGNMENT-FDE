@@ -7,13 +7,13 @@
 # model store. The backend reaches it over host.docker.internal, which is
 # mapped explicitly below so this behaves identically on Linux.
 
-name: lenny-growth-assistant
+name: koushik-growth-assistant
 
 services:
   # ------------------------------------------------------------------ db
   db:
     image: pgvector/pgvector:pg16
-    container_name: lenny-db
+    container_name: koushik-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-lenny}
@@ -40,7 +40,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: lenny-backend
+    container_name: koushik-backend
     restart: unless-stopped
     depends_on:
       db:
@@ -96,7 +96,7 @@ services:
         # Baked at build time: Vite inlines env vars into the bundle. Empty means
         # "same origin", and nginx proxies /api to the backend (see nginx.conf).
         VITE_API_BASE_URL: ""
-    container_name: lenny-frontend
+    container_name: koushik-frontend
     restart: unless-stopped
     depends_on:
       backend:
