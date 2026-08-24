@@ -98,7 +98,12 @@ class ArtifactSkill(Skill):
             if not retrieval.abstain:
                 chunks = retrieval.chunks
                 available = build_citations(chunks)
-                context_block = format_context(chunks)
+                context_block = format_context(
+                    chunks,
+                    max_chars_per_chunk=(
+                        ctx.settings.rag_context_chars_per_chunk if ctx.settings else 0
+                    ),
+                )
 
         # An artifact request is not always a knowledge question — "make a table
         # of what we just discussed" needs the conversation, not the corpus. So

@@ -18,6 +18,78 @@ from app.agent.router import (
 from tests.conftest import FakeProvider
 
 
+# ------------------------------------------------------------- small talk
+
+SMALLTALK = [
+    'hi', 'Hi', 'hii', 'hey', 'Hey there', 'hello', 'Hello!', 'yo', 'howdy',
+    'good morning', 'Good evening', 'thanks', 'Thank you', 'thx', 'ty',
+    'cheers', 'ok', 'okay', 'got it', 'makes sense', 'bye', 'goodbye',
+    'see you', 'who are you', 'What are you?', 'what can you do', 'help',
+    'what is this',
+]
+
+
+@pytest.mark.parametrize('message', SMALLTALK)
+def test_small_talk_is_answered_without_retrieval(message: str) -> None:
+    """A greeting must never reach retrieval or the model.
+
+    Measured before this existed: 'hi' cost an embedding, a hybrid search, and
+    ~3,000 tokens of transcript in the prompt — over 50 seconds on CPU to
+    produce a one-word reply.
+    """
+    assert classify_deterministic(message).skill == 'smalltalk'
+
+
+# The dangerous direction. A false positive answers a real question with
+# "Hello", which is far worse than a slightly slow greeting — so anything
+# carrying a real request must fall through.
+NOT_SMALLTALK = [
+    'hi, how should we choose an activation metric?',
+    'hello, what do operators say about retention?',
+    'thanks — now write me an essay about churn',
+    'ok but what about B2B pricing?',
+    'help me understand product-market fit',
+    'who are the guests that discuss onboarding?',
+    'what can you do to improve activation rates?',
+]
+
+
+@pytest.mark.parametrize('message', NOT_SMALLTALK)
+def test_a_greeting_prefix_does_not_swallow_a_real_question(message: str) -> None:
+    assert classify_deterministic(message).skill != 'smalltalk'
+
+
+def test_small_talk_never_calls_the_model_to_route(settings) -> None:
+    """The whole point is avoiding a round-trip, so routing must not make one."""
+    provider = FakeProvider(reply='{"skill": "grounded_qa"}')
+    decision = classify_deterministic('hi')
+    assert decision.skill == 'smalltalk'
+    assert provider.calls == []
+
+
+async def test_short_unmatched_input_skips_the_llm_classifier(settings) -> None:
+    """Too short to classify is not the same as ambiguous.
+
+    A model round-trip to choose between three intents for a two-word message
+    costs over a second on CPU and cannot beat the default.
+    """
+    provider = FakeProvider(reply='{"skill": "artifact"}')
+    decision = await Router(settings, provider).route('zzz qqq')
+
+    assert decision.skill == DEFAULT_SKILL
+    assert provider.calls == [], 'the router paid for a model call on a 2-word message'
+
+
+async def test_longer_ambiguous_input_still_uses_the_classifier(settings) -> None:
+    """The short-circuit must not disable the classifier entirely."""
+    provider = FakeProvider(reply='{"skill": "ship30_essay", "artifact_kind": null}')
+    decision = await Router(settings, provider).route(
+        'something genuinely ambiguous that no pattern will match at all'
+    )
+    assert provider.calls, 'the classifier should still run for a long ambiguous message'
+    assert decision.skill == 'ship30_essay'
+
+
 # ------------------------------------------------------------ grounded QA
 
 QA_MESSAGES = [

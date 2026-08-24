@@ -9,6 +9,7 @@ a container in a restart loop with the reason scrolling past in the logs.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -31,6 +32,7 @@ from .core.logging import (
     set_session_id,
 )
 from .db.session import Database
+from .llm.base import Message
 from .llm.registry import ProviderRegistry
 
 log = get_logger(__name__)
@@ -73,12 +75,66 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                    "hint": "Check DATABASE_URL and `docker compose ps`."},
         )
 
+    warmup_task: asyncio.Task | None = None
+    if settings.llm_warmup_on_startup:
+        warmup_task = asyncio.create_task(_warm_models(app.state.registry, settings))
+
     try:
         yield
     finally:
         log.info("app.stopping")
+        if warmup_task is not None and not warmup_task.done():
+            warmup_task.cancel()
         await app.state.registry.aclose()
         await database.disconnect()
+
+
+async def _warm_models(registry: ProviderRegistry, settings: Settings) -> None:
+    """Load the chat and embedding models before the first user needs them.
+
+    A cold local model is by far the largest latency in the product: measured on
+    the reference machine, the first request pays ~51 seconds to first token
+    while the identical request warm costs ~0.7 seconds. Ollama keeps a model
+    resident for OLLAMA_KEEP_ALIVE once loaded, so paying that cost once at
+    startup removes it from the user's very first question.
+
+    Runs as a background task so it never delays readiness, and every failure is
+    swallowed — an unavailable provider is already reported by the readiness
+    probe, and a failed warmup must never stop the app from serving.
+    """
+    started = time.perf_counter()
+    try:
+        provider = registry.get(settings.llm_provider)
+
+        # A one-token generation is enough to force the weights into memory.
+        await provider.complete(
+            [Message(role="user", content="hi")],
+            temperature=0.0,
+            max_tokens=1,
+        )
+        chat_ms = int((time.perf_counter() - started) * 1000)
+
+        embed_started = time.perf_counter()
+        try:
+            await registry.get(settings.embedding_provider).embed(["warmup"])
+            embed_ms = int((time.perf_counter() - embed_started) * 1000)
+        except NotImplementedError:
+            embed_ms = 0
+
+        log.info(
+            "app.warmup.complete",
+            extra={"chat_model": settings.model_for(settings.llm_provider),
+                   "chat_ms": chat_ms, "embedding_model": settings.embedding_model,
+                   "embed_ms": embed_ms},
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.warning(
+            "app.warmup.failed",
+            extra={"error": str(exc),
+                   "impact": "the first question will pay the model load cost"},
+        )
 
 
 def create_app() -> FastAPI:

@@ -282,12 +282,37 @@ class Retriever:
         )
 
 
-def format_context(chunks: list[RetrievedChunk]) -> str:
+def _excerpt(body: str, limit: int) -> str:
+    """Trim a chunk for the prompt, cutting on a sentence boundary when possible.
+
+    Cutting mid-sentence gives the model a fragment that reads as though the
+    speaker was interrupted, which encourages it to invent the completion. A
+    clean sentence break avoids that for the cost of a few characters.
+    """
+    if limit <= 0 or len(body) <= limit:
+        return body
+
+    window = body[:limit]
+    # Prefer the last sentence end in the final third, so we neither cut mid
+    # thought nor throw away most of the excerpt chasing a boundary.
+    boundary = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
+    if boundary > limit * 0.6:
+        return window[: boundary + 1] + " […]"
+    return window.rsplit(" ", 1)[0] + " […]"
+
+
+def format_context(chunks: list[RetrievedChunk], *, max_chars_per_chunk: int = 0) -> str:
     """Render retrieved chunks as fenced, numbered evidence.
 
     Explicit delimiters and an untrusted-data label are the cheap mitigation for
     prompt injection carried inside transcript text (PRD R7): the model is told
     this region is evidence to cite, never instructions to follow.
+
+    ``max_chars_per_chunk`` bounds what each source contributes to the prompt.
+    Prefill dominates time-to-first-token on CPU — measured ~65 tokens/second —
+    so context length is paid for directly in seconds before the user sees a
+    word. Trimming per chunk keeps the number of distinct sources (and so the
+    breadth of the citations) while cutting that cost.
     """
     blocks: list[str] = []
     for index, chunk in enumerate(chunks, start=1):
@@ -295,5 +320,6 @@ def format_context(chunks: list[RetrievedChunk]) -> str:
         if chunk.guest:
             header += f" — guest: {chunk.guest}"
         header += f" (at {chunk.start_label})"
-        blocks.append(f"<<<SOURCE {index}\n{header}\n\n{chunk.text}\nSOURCE {index}>>>")
+        body = _excerpt(chunk.text, max_chars_per_chunk)
+        blocks.append(f"<<<SOURCE {index}\n{header}\n\n{body}\nSOURCE {index}>>>")
     return "\n\n".join(blocks)

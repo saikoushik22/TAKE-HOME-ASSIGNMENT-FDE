@@ -24,12 +24,18 @@ from typing import Literal
 from ..core.config import Settings
 from ..core.logging import get_logger
 from ..llm.base import LLMProvider, Message
+from .skills.smalltalk import match as smalltalk_match
 
 log = get_logger(__name__)
 
-SkillName = Literal["grounded_qa", "ship30_essay", "artifact"]
+SkillName = Literal["grounded_qa", "ship30_essay", "artifact", "smalltalk"]
 
 DEFAULT_SKILL: SkillName = "grounded_qa"
+
+# Below this word count, a message that matches no pattern is not "ambiguous" —
+# it is too short to classify. Paying a model round-trip to decide between three
+# intents for "ok" costs over a second and cannot beat the default.
+_MIN_WORDS_FOR_LLM_CLASSIFY = 4
 
 # Confidence gap required for a deterministic decision to stand on its own.
 DECISION_MARGIN = 0.15
@@ -105,6 +111,14 @@ def classify_deterministic(message: str) -> RouteDecision:
     text = (message or "").strip()
     if not text:
         return RouteDecision(DEFAULT_SKILL, 1.0, "empty-input->default")
+
+    # Small talk is checked first and exits immediately. Sending "hi" through
+    # retrieval costs an embedding, a hybrid search, and ~3,000 tokens of
+    # transcript in the prompt — measured at over 50 seconds on CPU to answer a
+    # greeting. The patterns are anchored to the whole message, so
+    # "hi, how do we pick an activation metric?" is still a real question.
+    if smalltalk_match(text) is not None:
+        return RouteDecision("smalltalk", 1.0, "smalltalk")
 
     essay_score, essay_rule = _score(text, _ESSAY_PATTERNS)
     artifact_score, artifact_rule = _score(text, _ARTIFACT_PATTERNS)
@@ -209,6 +223,15 @@ class Router:
         decision = classify_deterministic(message)
 
         needs_help = decision.rule.startswith(("ambiguous", "no-pattern"))
+
+        # Too short to classify is not the same as ambiguous. A model round-trip
+        # to pick between three intents for "ok" costs over a second on CPU and
+        # cannot beat the default, so the cheap path wins outright.
+        word_count = len((message or "").split())
+        if needs_help and word_count < _MIN_WORDS_FOR_LLM_CLASSIFY:
+            log.info("router.too_short_for_llm", extra={"words": word_count})
+            needs_help = False
+
         if needs_help and self._settings.router_llm_fallback and self._provider:
             llm_decision = await classify_with_llm(message, self._provider, self._settings)
             if llm_decision is not None:

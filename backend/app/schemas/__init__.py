@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-SkillName = Literal["grounded_qa", "ship30_essay", "artifact"]
+SkillName = Literal["grounded_qa", "ship30_essay", "artifact", "smalltalk"]
 SkillOverride = Literal[
     "grounded_qa", "ship30_essay", "artifact", "artifact_markdown", "artifact_html"
 ]

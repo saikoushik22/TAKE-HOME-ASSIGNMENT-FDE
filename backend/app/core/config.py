@@ -54,7 +54,10 @@ class Settings(BaseSettings):
     llm_provider: ProviderName = "ollama"
     llm_model: str = ""  # empty -> use the active provider's own default
     llm_temperature: float = 0.3
-    llm_max_tokens: int = 2048
+    # A grounded answer measures ~320 tokens in practice, so 1024 is generous
+    # while still bounding the worst case. At ~10 tokens/second on CPU the old
+    # 2048 ceiling allowed a single answer to run for three minutes.
+    llm_max_tokens: int = 1024
     llm_timeout_seconds: float = 180.0
 
     # Fallback is OFF by default. Silently answering with a different model than the
@@ -68,6 +71,12 @@ class Settings(BaseSettings):
     ollama_model: str = "llama3.2:3b"
     ollama_embed_model: str = "nomic-embed-text"
     ollama_keep_alive: str = "10m"
+
+    # Load the models into memory at startup instead of making the first user
+    # pay for it. Measured on the reference machine: a cold chat model costs
+    # ~51s to first token, the same request warm costs ~0.7s. Runs in the
+    # background, so it never delays readiness, and failure is harmless.
+    llm_warmup_on_startup: bool = True
 
     # ------------------------------------------------------------- anthropic
     anthropic_api_key: str | None = None
@@ -88,8 +97,22 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 32
 
     # ------------------------------------------------------------------- rag
-    rag_top_k: int = 8
+    # 5, not 8. Prompt prefill dominates latency on CPU: 8 chunks is ~14,000
+    # characters (~3,500 tokens) of transcript for the model to read before it
+    # can emit a single word. 5 chunks still spans several episodes after the
+    # per-episode diversity cap, and cuts the prompt by roughly a third.
+    rag_top_k: int = 4
     rag_candidates: int = 30
+
+    # Characters of each retrieved chunk actually sent to the model.
+    #
+    # Prefill dominates time-to-first-token: measured ~65 tokens/second on the
+    # reference CPU, so every 1,000 characters of context costs roughly four
+    # seconds before the user sees a single word. Chunks average ~1,400
+    # characters, and the passage that earned the retrieval is rarely the whole
+    # turn — trimming keeps the breadth of several sources while cutting the
+    # prompt roughly in half. 0 disables trimming.
+    rag_context_chars_per_chunk: int = 800
     # Calibrated against the golden set, not guessed. Measured cosine bands on
     # nomic-embed-text over this corpus:
     #     in-corpus      0.44 – 0.73  (median 0.62)
@@ -120,6 +143,13 @@ class Settings(BaseSettings):
     agent_runtime: Literal["native", "claude_sdk"] = "native"
     agent_max_steps: int = 4
     router_llm_fallback: bool = True
+
+    # When an answer comes back with no [S#] markers, ask the model once to
+    # annotate its own draft. Raises the citation-backed answer rate, but it is
+    # a SECOND full generation, so it roughly doubles latency on the turns where
+    # it fires. Set QA_CITATION_REPAIR=false to trade citation coverage for
+    # speed on slow local hardware.
+    qa_citation_repair: bool = True
 
     # ------------------------------------------------------------- artifacts
     artifact_max_bytes: int = 512_000

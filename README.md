@@ -306,6 +306,55 @@ OLLAMA_MODEL=qwen2.5:7b make eval
 
 ---
 
+## Performance
+
+Measured on the reference machine (16 GB RAM, 12-core mobile CPU, **no GPU**,
+`llama3.2:3b`):
+
+| Interaction | Time to first word | Total |
+|---|---|---|
+| Greeting ("hi", "thanks", "who are you") | **~0.03 s** | ~0.03 s |
+| Grounded question | ~15 s | ~43 s |
+
+**Where the time goes.** Routing, embedding, and hybrid retrieval together take
+**under 0.1 s** — retrieval is effectively free. Everything else is the local
+model:
+
+- **Prompt prefill ~65 tokens/second.** The model must read the retrieved
+  transcripts before writing a word. This is time-to-first-token.
+- **Generation ~10 tokens/second.** This is the rest.
+
+So latency is governed almost entirely by *how many tokens go in and come out*,
+which is what the dials below control.
+
+### Making it faster
+
+| Change | Effect |
+|---|---|
+| `RAG_TOP_K=3`, `RAG_CONTEXT_CHARS_PER_CHUNK=500` | Shorter prompt → faster first word, narrower grounding |
+| `QA_CITATION_REPAIR=false` | Skips a second generation on answers that came back uncited |
+| `OLLAMA_MODEL=llama3.2:1b` | Roughly 3× faster, noticeably weaker answers |
+| `LLM_PROVIDER=anthropic` + an API key | Seconds instead of tens of seconds |
+
+**Honest summary.** A 3B model on CPU is slow, and no amount of tuning changes
+that — the fixes above removed the *avoidable* waiting (greetings that ran the
+full pipeline, a cold model on the first request, more context than the answer
+needed), not the arithmetic. If you want a fast demo, switch the provider; if
+you want a fully local one, expect tens of seconds and let the streaming UI show
+progress. Both are one environment variable apart.
+
+### Things that used to be slow, and are not any more
+
+- **Greetings ran the full RAG pipeline** — an embedding, a hybrid search, and
+  ~3,000 tokens of transcript in the prompt, to answer "hi". Now short-circuited
+  before any model call: **52 s → 0.03 s**.
+- **A cold model cost ~51 s on the first question.** Models are now warmed at
+  startup in the background, so the first user does not pay it.
+- **A two-word message triggered a model round-trip just to classify intent.**
+  Too short to classify is now treated as such, not as ambiguous.
+
+---
+
 ## Operations
 
 ```bash

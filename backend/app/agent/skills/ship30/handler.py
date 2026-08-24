@@ -159,7 +159,12 @@ class Ship30Skill(Skill):
 
         chunks = retrieval.chunks
         available = build_citations(chunks)
-        context_block = format_context(chunks)
+        context_block = format_context(
+            chunks,
+            max_chars_per_chunk=(
+                ctx.settings.rag_context_chars_per_chunk if ctx.settings else 0
+            ),
+        )
         skill_spec = _skill_text()
 
         yield {"type": "status", "stage": "planning",

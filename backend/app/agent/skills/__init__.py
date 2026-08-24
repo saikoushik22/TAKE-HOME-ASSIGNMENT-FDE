@@ -11,11 +11,13 @@ from .artifact import ArtifactSkill
 from .base import Skill, SkillContext, SkillResult
 from .grounded_qa import GroundedQASkill
 from .ship30.handler import Ship30Skill
+from .smalltalk import SmallTalkSkill
 
 _REGISTRY: dict[str, Skill] = {
     GroundedQASkill.name: GroundedQASkill(),
     Ship30Skill.name: Ship30Skill(),
     ArtifactSkill.name: ArtifactSkill(),
+    SmallTalkSkill.name: SmallTalkSkill(),
 }
 
 
@@ -37,6 +39,7 @@ __all__ = [
     "ArtifactSkill",
     "GroundedQASkill",
     "Ship30Skill",
+    "SmallTalkSkill",
     "Skill",
     "SkillContext",
     "SkillResult",
