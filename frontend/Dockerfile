@@ -28,7 +28,11 @@ COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 
+# 127.0.0.1, never "localhost". Inside the container /etc/hosts maps localhost
+# to BOTH 127.0.0.1 and ::1, wget tries the IPv6 address first, and nginx's
+# `listen 80` binds IPv4 only — so the check gets "connection refused" and the
+# container reports unhealthy while serving traffic perfectly.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget -qO- http://localhost/healthz || exit 1
+    CMD wget -qO- http://127.0.0.1/healthz || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

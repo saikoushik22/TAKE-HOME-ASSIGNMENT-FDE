@@ -80,7 +80,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).status==200 else 1)"]
+      # Explicit IPv4 loopback — see the note in frontend/Dockerfile.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status==200 else 1)"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -103,7 +104,10 @@ services:
     ports:
       - "${FRONTEND_PORT:-8080}:80"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      # 127.0.0.1, not "localhost" — see the note in frontend/Dockerfile. The
+      # container resolves localhost to ::1 first, nginx listens on IPv4 only,
+      # and the container reports unhealthy while serving fine.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5

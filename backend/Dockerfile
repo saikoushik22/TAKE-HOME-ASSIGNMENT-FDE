@@ -31,8 +31,12 @@ ENV DATA_DIR=/data
 
 EXPOSE 8000
 
+# Explicit IPv4 loopback rather than "localhost": in-container localhost also
+# resolves to ::1, and a server bound to 0.0.0.0 accepts IPv4 only. This one
+# happens to work because Python tries IPv4 first, but relying on resolver
+# ordering for a healthcheck is luck, not design.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).status == 200 else 1)"
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200 else 1)"
 
 # One worker on purpose. Each in-flight turn holds a database session for the
 # whole generation, and CPU-bound local inference is the real bottleneck long
