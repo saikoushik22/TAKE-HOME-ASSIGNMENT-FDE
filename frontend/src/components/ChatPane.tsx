@@ -4,11 +4,18 @@ import { MessageItem, SourceChips, SourcePanel } from './MessageItem'
 import type { LiveTurn } from '../hooks/useChat'
 import type { ChatMessage } from '../lib/types'
 
+// Chosen to span the topics the corpus is deepest on, and to show the range of
+// what the assistant does — the last one opens the artifact viewer, which is
+// otherwise not discoverable from an empty chat.
 const EXAMPLES = [
   'How should we choose an activation metric?',
   'What do operators say about finding product-market fit?',
   'How do great PMs work with engineering teams?',
-  'Turn that into a Ship 30 for 30 essay',
+  'What actually moves retention?',
+  'How should an early-stage company think about pricing?',
+  'What should you look for when hiring product managers?',
+  'How do strong teams prioritise their roadmap?',
+  'Make me a one-pager on growth loops',
 ]
 
 export function ChatPane({
@@ -163,7 +170,7 @@ function EmptyState({
             Try one of these — all answerable from the indexed corpus:
           </p>
           <div className="empty__grid">
-            {EXAMPLES.slice(0, 3).map((example) => (
+            {EXAMPLES.map((example) => (
               <button
                 key={example}
                 type="button"
