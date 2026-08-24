@@ -1,0 +1,12 @@
+-r requirements.txt
+
+# ---------- Testing ----------
+pytest==8.3.4
+pytest-asyncio==0.25.2
+anyio==4.8.0
+
+# ---------- Optional: real Claude Agent SDK adapter ----------
+# Only needed when AGENT_RUNTIME=claude_sdk. The default provider-agnostic runtime
+# (which is what the mandatory local Ollama demo uses) does not require this.
+# Also requires the Claude Code CLI on PATH. See architecture.md section 6.1.
+claude-agent-sdk==0.1.0

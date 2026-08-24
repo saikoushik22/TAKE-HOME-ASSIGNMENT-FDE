@@ -1,0 +1,47 @@
+# ---------- Secrets: never commit ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ---------- Transcript corpus ----------
+# The Lenny's Podcast transcripts are third-party content. We do NOT redistribute
+# them in this repo; `make ingest` fetches them from the upstream public repo at
+# setup time. See docs/architecture.md -> "Ingestion".
+data/transcripts/
+data/*.jsonl
+data/*.sqlite
+data/cache/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ---------- Node / frontend ----------
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# ---------- Editors / OS ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Runtime ----------
+logs/
+*.log
+pgdata/
