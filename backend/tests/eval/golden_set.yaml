@@ -1,0 +1,113 @@
+# Golden evaluation set.
+#
+# Scored by `make eval` (backend/scripts/evaluate.py). Two groups, measuring two
+# different things:
+#
+#   in_corpus     -> Citation-Backed Answer Rate (CBAR). Target >= 95%.
+#                    Every answer must carry at least one citation that resolves
+#                    to a real transcript chunk.
+#
+#   out_of_corpus -> Abstention Correctness. Target 100%, and a RELEASE GATE.
+#                    The assistant must decline. A single confident fabrication
+#                    here fails the build, because it is the exact failure that
+#                    destroys the product's reason to exist.
+#
+# Questions are deliberately phrased the way a growth PM would actually ask
+# them, not as keyword queries — retrieval that only works on well-formed
+# queries is not the thing being measured.
+
+in_corpus:
+  - id: activation-metric
+    question: How should we think about choosing an activation metric?
+    expect_topics: [activation, onboarding, metric]
+
+  - id: pmf-signal
+    question: How do you know when you have found product-market fit?
+    expect_topics: [product-market fit, pmf, retention]
+
+  - id: retention-improve
+    question: What advice do operators give about improving retention?
+    expect_topics: [retention, churn, engagement]
+
+  - id: pm-eng-collaboration
+    question: How should product managers work with engineering teams?
+    expect_topics: [engineering, collaboration, team]
+
+  - id: early-growth
+    question: What are effective ways to get the first thousand users?
+    expect_topics: [growth, users, early]
+
+  - id: pricing
+    question: How should an early-stage company think about pricing?
+    expect_topics: [pricing, monetization, willingness to pay]
+
+  - id: hiring-pms
+    question: What should you look for when hiring product managers?
+    expect_topics: [hiring, interview, product manager]
+
+  - id: roadmap-prioritization
+    question: How do strong teams prioritise their roadmap?
+    expect_topics: [roadmap, prioritisation, planning]
+
+  - id: user-research
+    question: How much user research should a team do before building?
+    expect_topics: [research, customer, interview]
+
+  - id: growth-loops
+    question: What makes a growth loop work?
+    expect_topics: [growth, loop, referral]
+
+  - id: onboarding-failure
+    question: Why do onboarding flows commonly fail?
+    expect_topics: [onboarding, activation, friction]
+
+  - id: career-advice
+    question: What career advice do guests give to product managers?
+    expect_topics: [career, growth, craft]
+
+  - id: metrics-tradeoff
+    question: What is the difference between a north star metric and a guardrail metric?
+    expect_topics: [metric, north star, guardrail]
+
+  - id: b2b-vs-b2c
+    question: How does growth differ between B2B and consumer products?
+    expect_topics: [b2b, consumer, growth]
+
+  - id: experimentation
+    question: How should teams run experiments and A/B tests responsibly?
+    expect_topics: [experiment, test, data]
+
+  - id: founder-mode
+    question: What do founders do differently from professional managers?
+    expect_topics: [founder, leadership, company]
+
+  - id: churn-diagnosis
+    question: How do you diagnose why users are churning?
+    expect_topics: [churn, retention, users]
+
+# Questions with no plausible support in a product/growth podcast corpus.
+# The assistant must decline rather than answer from parametric memory.
+out_of_corpus:
+  - id: patent-filing
+    question: What is the process for filing a software patent in Germany?
+
+  - id: medical-dosage
+    question: What is the recommended dosage of amoxicillin for a child with an ear infection?
+
+  - id: sports-result
+    question: Who won the 2018 FIFA World Cup final and what was the score?
+
+  - id: tax-law
+    question: What are the capital gains tax brackets in India for 2024?
+
+  - id: recipe
+    question: Give me a recipe for a traditional Neapolitan pizza dough.
+
+  - id: car-repair
+    question: How do I replace the timing belt on a 2015 Honda Civic?
+
+  - id: astronomy
+    question: What is the surface temperature of Neptune?
+
+  - id: python-stdlib
+    question: What arguments does Python's itertools.groupby take?
