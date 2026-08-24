@@ -90,7 +90,17 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------- rag
     rag_top_k: int = 8
     rag_candidates: int = 30
-    rag_min_similarity: float = 0.35
+    # Calibrated against the golden set, not guessed. Measured cosine bands on
+    # nomic-embed-text over this corpus:
+    #     in-corpus      0.44 – 0.73  (median 0.62)
+    #     out-of-corpus  0.43 – 0.55  (median 0.44)
+    # The bands OVERLAP, so no threshold separates them perfectly — dense
+    # embeddings keep a high similarity floor for any same-language text.
+    # 0.50 rejects 7 of 8 known out-of-corpus questions while keeping 16 of 17
+    # in-corpus ones. The residual case is caught downstream by the
+    # retrieval-constrained prompt and citation validation, which together
+    # produce an explicit refusal with zero citations (PRD R1, layers 1 and 3).
+    rag_min_similarity: float = 0.50
     rag_max_per_episode: int = 3
     rag_rrf_k: int = 60
 

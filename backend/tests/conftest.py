@@ -46,7 +46,10 @@ def _test_env() -> None:
             # test run feel broken.
             "DB_CONNECT_RETRIES": "1",
             "DB_CONNECT_BACKOFF_SECONDS": "0.1",
-            "RAG_MIN_SIMILARITY": "0.35",
+            # Must track the calibrated default in app/core/config.py. Pinned so
+            # a developer's local .env cannot change test outcomes, but pinning
+            # it to a stale value silently tests a floor the product does not use.
+            "RAG_MIN_SIMILARITY": "0.50",
             "RAG_TOP_K": "5",
             "RAG_CANDIDATES": "20",
             # Blank values on purpose: these reproduce the .env.example shape

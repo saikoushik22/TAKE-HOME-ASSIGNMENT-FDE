@@ -260,14 +260,45 @@ def test_search_returns_ranked_hits_or_abstains(client: TestClient) -> None:
 
 
 @pytest.mark.integration
-def test_nonsense_query_abstains_rather_than_inventing(client: TestClient) -> None:
-    """AC6, at the retrieval layer: below the floor, nothing is returned."""
+def test_gibberish_query_is_rejected_by_the_relevance_floor(client: TestClient) -> None:
+    """Pure gibberish has no plausible neighbour and must not clear the floor."""
     response = client.post(
         '/api/search',
         json={'query': 'zxqw plorbnax fnordulate the quibnitz'},
     )
     body = response.json()
-    assert body['abstained'] or body['hits'] == []
+    assert body['abstained'] or body['hits'] == [], (
+        f"gibberish cleared the relevance floor: {body.get('hits', [])[:1]}"
+    )
+
+
+@pytest.mark.integration
+def test_out_of_corpus_question_makes_no_strong_match(client: TestClient) -> None:
+    """A real out-of-domain question is a WEAKER test than gibberish.
+
+    Measured cosine bands on this corpus overlap — in-corpus 0.44-0.73,
+    out-of-corpus 0.43-0.55 — so a well-formed question about tax law can clear
+    the floor even though nothing supports it. That is expected, and it is why
+    the relevance floor is only layer 2 of four (PRD R1).
+
+    What the retrieval layer CAN promise is that no such match looks strong.
+    The guarantee that the assistant does not fabricate is enforced downstream
+    by the retrieval-constrained prompt and citation validation, and is measured
+    end to end by `make eval`, not here.
+    """
+    body = client.post(
+        '/api/search',
+        json={'query': 'What is the surface temperature of Neptune?'},
+    ).json()
+
+    if body['abstained'] or not body['hits']:
+        return
+
+    strongest = max(hit['vector_similarity'] for hit in body['hits'])
+    assert strongest < 0.60, (
+        f'an out-of-corpus question produced a strong match ({strongest:.2f}); '
+        'the relevance floor may need re-calibrating with `make eval`'
+    )
 
 
 @pytest.mark.integration
