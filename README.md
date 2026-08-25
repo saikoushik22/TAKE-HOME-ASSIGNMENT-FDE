@@ -49,8 +49,8 @@ The design rationale, trade-offs, and what was deliberately left out are in
 ## Quick start
 
 ```bash
-git clone https://github.com/saikoushik22/TAKE-HOME-ASSIGNMENT-FDE.git
-cd TAKE-HOME-ASSIGNMENT-FDE
+git clone https://github.com/saikoushik22/Take-Home-Assignment-FDE.git
+cd Take-Home-Assignment-FDE
 
 cp .env.example .env          # safe defaults; no editing needed
 
