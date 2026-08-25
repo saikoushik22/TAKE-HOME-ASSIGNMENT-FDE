@@ -1,7 +1,7 @@
 # PRD — The Lenny Growth Assistant
 
 **Status:** v1.0 (engagement scope, delivered)
-**Author:** sathwikgoud28
+**Author:** saikoushik22
 **Engagement type:** Small forward-deployment — discovery, build, local deploy, handoff
 **Last updated:** 2026-08-24
 
